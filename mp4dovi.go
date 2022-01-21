@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +21,7 @@ var (
 	StsdBoxType = BoxType{'s', 't', 's', 'd'}
 	DvheBoxType = BoxType{'d', 'v', 'h', 'e'}
 	Dvh1BoxType = BoxType{'d', 'v', 'h', '1'}
+	Hev1BoxType = BoxType{'h', 'e', 'v', '1'}
 )
 
 const HeaderSize = 8
@@ -28,6 +30,9 @@ type Header struct {
 	Size uint32
 	Type BoxType
 }
+
+var codecFrom string
+var codecTo string
 
 func findHeader(r io.ReadSeeker, boxType BoxType, limit int64) (header *Header, err error) {
 	var h Header
@@ -67,14 +72,14 @@ func forEachBox(r io.ReadSeeker, limit int64, fn func(header Header) error) (err
 
 func sampleEntryHandler(rw *os.File) func(Header) error {
 	return func(h Header) (err error) {
-		if h.Type == DvheBoxType {
+		if string(h.Type[:]) == codecFrom {
 			if _, err = rw.Seek(-4, io.SeekCurrent); err != nil {
 				return fmt.Errorf(`failed to seek back: %w`, err)
 			}
-			if err = binary.Write(rw, binary.BigEndian, Dvh1BoxType); err != nil {
-				return fmt.Errorf(`failed to write box header type "%s": %w`, Dvh1BoxType, err)
+			if err = binary.Write(rw, binary.BigEndian, []byte(codecTo)); err != nil {
+				return fmt.Errorf(`failed to write box header type "%s": %w`, codecTo, err)
 			}
-			fmt.Println(`Changed Dolby Vision codec from dvhe to dvh1`)
+			fmt.Printf("Changed codec from %v to %v\n", codecFrom, codecTo)
 		}
 		return
 	}
@@ -130,9 +135,15 @@ func processFile(mp4file string) (err error) {
 	if rw, err = os.OpenFile(mp4file, os.O_RDWR, 0); err != nil {
 		return fmt.Errorf(`cannot open file "%s": %w`, mp4file, err)
 	}
-	defer rw.Close()
+	defer func(rw *os.File) {
+		filename := rw.Name()
+		err := rw.Close()
+		if err != nil {
+			_ = fmt.Errorf("cannot close file %v", filename)
+		}
+	}(rw)
 
-	fmt.Printf(`Processing %s ...\n`, mp4file)
+	fmt.Printf("Processing %s ...\n", mp4file)
 
 	if _, err = rw.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf(`failed to seek: %w`, err)
@@ -158,17 +169,22 @@ func run(mp4files []string) (err error) {
 }
 
 func help() {
-	fmt.Println(`Usage: mp4dovi <file>...`)
+	fmt.Printf("usage: mp4dovi [options] files...\n")
+	flag.PrintDefaults()
 }
 
 func main() {
+	flag.StringVar(&codecFrom, "from", "dvhe", "video codec to convert from")
+	flag.StringVar(&codecTo, "to", "dvh1", "video codec to convert to")
+	flag.Parse()
 
-	if len(os.Args) < 2 {
+	files := flag.Args()
+	if len(files) < 1 {
 		help()
 		os.Exit(1)
 	}
 
-	if err := run(os.Args[1:]); err != nil {
+	if err := run(files); err != nil {
 		log.Fatal(err)
 	}
 }
